@@ -1,0 +1,997 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Helpers\Helpers;
+use App\Models\Comment;
+use App\Models\Project;
+use App\Models\ProjectLike;
+use Illuminate\Http\Request;
+use App\Traits\ApiResponseTrait;
+use App\Http\Requests\CommentRequest;
+use App\Http\Resources\CommentResource;
+use App\Http\Resources\ProjectResource;
+use App\Http\Requests\CreateProjectRequest;
+use App\Http\Requests\UpdateProjectRequest;
+use App\Http\Resources\ProjectLikesResource;
+use Illuminate\Support\Facades\Auth;
+
+class ProjectController extends Controller
+{
+
+    use ApiResponseTrait;
+
+    /**
+     * @OA\Get(
+     *     path="/api/projects/index",
+     *     summary="List all projects",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Response(
+     *         response=200,
+     *         description="Show all projects successfully",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="Show All projects successfully"),
+     *             @OA\Property(property="data", type="array", @OA\Items(type="object"))
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=404,
+     *         description="No projects found",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="No projects found")
+     *         )
+     *     )
+     * )
+     */
+    public function index(Request $request)
+    {
+        // Get pagination and sorting parameters
+        $perPage = $request->input('per_page', Helpers::getPagination());
+        $sortBy = $request->input('sortBy', 'id');
+        $sortDirection = $request->input('sort', 'desc');
+
+        $authUser = Auth::user();
+
+        $query = Project::with(['service', 'user', 'section']);
+
+        if ($authUser->userType === 'user') {
+            $query->where('user_id', $authUser->id);
+        } else if ($authUser->userType === 'employee' || $authUser->userType === 'company') {
+            $query->where('section_id', $authUser->employee->section_id)
+                ->where('service_id', $authUser->employee->service_id);
+        }
+
+        $query->orderBy($sortBy, $sortDirection);
+        $projects = $query->paginate($perPage);
+
+        if ($projects->isNotEmpty()) {
+            // Check if the authenticated user likes each project
+            $projects->getCollection()->each(function ($project) use ($authUser) {
+                $project->is_liked = ProjectLike::where('user_id', $authUser->id)
+                    ->where('project_id', $project->id)
+                    ->exists();
+            });
+
+            return $this->apiResponse(
+                'Show all projects successfully',
+                200,
+                ProjectResource::collection($projects)->response()->getData(true)
+            );
+        }
+
+        return $this->apiResponse('No projects found', 404);
+    }
+
+
+    /**
+     * @OA\Get(
+     *     path="/api/projects/check-project-author/{projectId}",
+     *     summary="Show check project author successfully",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="projectId",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the project",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="Project details",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="Project details"),
+     *             @OA\Property(property="data", type="object")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=404,
+     *         description="Project not found",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="No project found")
+     *         )
+     *     )
+     * )
+     */
+
+    public function checkProjectAuthor($projectId)
+    {
+        $authUser = Auth::user();
+
+        $project = Project::where('id', $projectId)
+            ->where('user_id', $authUser->id)
+            ->first();
+
+        if (!$project) {
+            return $this->apiResponse('No project found or unauthorized', 404);
+        }
+
+        return $this->apiResponse('Authorized', 200, true);
+    }
+
+
+
+    /**
+     * @OA\Post(
+     *     path="/api/projects/create",
+     *     summary="Create a new project",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\RequestBody(
+     *         required=true,
+     *         content={
+     *             @OA\MediaType(
+     *                 mediaType="multipart/form-data",
+     *                 @OA\Schema(
+     *                     type="object",
+     *                     required={"section_id", "service_id", "user_id", "desc", "city"},
+     *                     @OA\Property(
+     *                         property="section_id",
+     *                         type="integer",
+     *                         description="ID of the section",
+     *                         example=1
+     *                     ),
+     *                     @OA\Property(
+     *                         property="service_id",
+     *                         type="integer",
+     *                         description="ID of the service",
+     *                         example=2
+     *                     ),
+     *                     @OA\Property(
+     *                         property="user_id",
+     *                         type="integer",
+     *                         description="ID of the user",
+     *                         example=3
+     *                     ),
+     *                     @OA\Property(
+     *                         property="desc",
+     *                         type="string",
+     *                         description="Description of the project",
+     *                         example="This is a project description."
+     *                     ),
+     *                     @OA\Property(
+     *                         property="city",
+     *                         type="string",
+     *                         description="City related to the project",
+     *                         example="New York"
+     *                     ),
+     *                  @OA\Property(
+     *                     property="img",
+     *                     type="string",
+     *                     format="binary",
+     *                     description="project image"
+     *                  ),
+     *                  @OA\Property(
+     *                     property="video",
+     *                     type="string",
+     *                     format="binary",
+     *                     description="project video"
+     *                  ),
+     *                 )
+     *             )
+     *         }
+     *     ),
+     *     @OA\Response(
+     *         response=201,
+     *         description="Project created successfully",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="Project created successfully"),
+     *             @OA\Property(property="data", type="object")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=422,
+     *         description="Validation errors",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="Validation errors"),
+     *             @OA\Property(property="errors", type="object")
+     *         )
+     *     )
+     * )
+     */
+
+    public function store(CreateProjectRequest $request)
+    {
+        $validatedData = $request->validated();
+
+        if ($request->hasFile('img')) {
+            $img_path = $request->file('img')->move(
+                public_path('projects/images'),
+                $request->file('img')->getClientOriginalName()
+            );
+            $img_path = asset('projects/images/' . $request->file('img')->getClientOriginalName());
+            $validatedData['img'] = $img_path;
+        }
+
+        if ($request->hasFile('video')) {
+            $video_path = $request->file('video')->move(
+                public_path('projects/videos'),
+                $request->file('video')->getClientOriginalName()
+             );
+            $video_path = asset('projects/videos/' . $request->file('video')->getClientOriginalName());
+            $validatedData['video'] = $video_path;
+        }
+
+        $project = Project::create($validatedData);
+        $project->load(['service', 'user', 'section']);
+
+        return $this->apiResponse('Project created successfully', 201, new ProjectResource($project));
+    }
+
+
+
+    /**
+     * @OA\Get(
+     *     path="/api/projects/show/{id}",
+     *     summary="Show project details",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="id",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the project",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="Project details",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="Project details"),
+     *             @OA\Property(property="data", type="object")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=404,
+     *         description="Project not found",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="No project found")
+     *         )
+     *     )
+     * )
+     */
+    public function show($id)
+    {
+        $authUser = Auth::user();
+        $project = Project::find($id);
+
+        if (!$project) {
+            return $this->apiResponse('No project found', 404);
+        }
+
+        // Check if the project is liked by the authenticated user
+        $project->is_liked = ProjectLike::where('user_id', $authUser->id)
+            ->where('project_id', $project->id)
+            ->exists();
+
+        $project->load(['service', 'user', 'section', 'comments']);
+
+        // Increment the view count
+        $project->increment('views');
+
+        return $this->apiResponse('Project details', 200, new ProjectResource($project));
+    }
+
+
+    /**
+     * @OA\Post(
+     *     path="/api/projects/update/{id}",
+     *     summary="Update a project",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="id",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the project",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\RequestBody(
+     *         required=true,
+     *         content={
+     *             @OA\MediaType(
+     *                 mediaType="multipart/form-data",
+     *                 @OA\Schema(
+     *                     type="object",
+     *                     @OA\Property(
+     *                         property="desc",
+     *                         type="string",
+     *                         description="Description of the project",
+     *                         example="Updated project description."
+     *                     ),
+     *                  @OA\Property(
+     *                     property="img",
+     *                     type="string",
+     *                     format="binary",
+     *                     description="project image"
+     *                  ),
+     *                  @OA\Property(
+     *                     property="video",
+     *                     type="string",
+     *                     format="binary",
+     *                     description="project video"
+     *                  ),
+     *                 )
+     *             )
+     *         }
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="Project updated successfully",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="Project updated successfully"),
+     *             @OA\Property(property="data", type="object")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=404,
+     *         description="Project not found",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="No project found")
+     *         )
+     *     )
+     * )
+     */
+
+     public function update(UpdateProjectRequest $request, $id)
+     {
+         $authUser = Auth::user();
+         $project = Project::find($id);
+
+         if (!$project) {
+             return $this->apiResponse('No project found', 404);
+         }
+
+         if ($authUser->id !== $project->user_id) {
+             return $this->apiResponse('Not authorized', 401);
+         }
+
+         $validatedData = $request->validated();
+
+         if ($request->hasFile('img')) {
+             if ($project->img && file_exists(public_path(parse_url($project->img, PHP_URL_PATH)))) {
+                 unlink(public_path(parse_url($project->img, PHP_URL_PATH)));
+             }
+
+             $img_path = $request->file('img')->move(
+                 public_path('projects/images'),
+                 $request->file('img')->getClientOriginalName()
+             );
+             $validatedData['img'] = asset('projects/images/' . $request->file('img')->getClientOriginalName());
+         }
+
+         if ($request->hasFile('video')) {
+             if ($project->video && file_exists(public_path(parse_url($project->video, PHP_URL_PATH)))) {
+                 unlink(public_path(parse_url($project->video, PHP_URL_PATH)));
+             }
+
+             $video_path = $request->file('video')->move(
+                 public_path('projects/videos'),
+                 $request->file('video')->getClientOriginalName()
+             );
+             $validatedData['video'] = asset('projects/videos/' . $request->file('video')->getClientOriginalName());
+         }
+
+         $project->update($validatedData);
+
+         $project->load(['service', 'user', 'section']);
+
+         return $this->apiResponse('Project updated successfully', 200, new ProjectResource($project));
+     }
+
+
+    /**
+     * @OA\Get(
+     *     path="/api/projects/check-project-comment-author/{projectId}/{commentId}",
+     *     summary="Show check project author successfully",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="projectId",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the project",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Parameter(
+     *         name="commentId",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the comment",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="Project details",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="Project details"),
+     *             @OA\Property(property="data", type="object")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=404,
+     *         description="Project not found",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="No project found")
+     *         )
+     *     )
+     * )
+     */
+
+    public function checkProjectCommentAuthor($projectId, $commentId)
+    {
+        $authUser = Auth::user();
+
+        $comment = Comment::where('project_id', $projectId)
+            ->where('id', $commentId)
+            ->where('user_id', $authUser->id)
+            ->first();
+
+        if (!$comment) {
+            return $this->apiResponse('Comment not found or unauthorized access', 404);
+        }
+
+        return $this->apiResponse('Authorized', 200, true);
+    }
+
+
+    /**
+     * @OA\Delete(
+     *     path="/api/projects/destroy/{id}",
+     *     summary="Delete a project",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="id",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the project",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="Project deleted successfully",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="Project deleted successfully")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=404,
+     *         description="Project not found",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="No project found")
+     *         )
+     *     )
+     * )
+     */
+    public function destroy($id)
+    {
+        $authUser = Auth::user();
+        $project = Project::find($id);
+
+        if (!$project) {
+            return $this->apiResponse('No project found', 404);
+        }
+
+        if ($authUser->id !== $project->user_id) {
+            return $this->apiResponse('Not authorized', 401);
+        }
+
+        if ($project->img && file_exists(public_path(parse_url($project->img, PHP_URL_PATH)))) {
+            unlink(public_path(parse_url($project->img, PHP_URL_PATH)));
+        }
+
+        if ($project->video && file_exists(public_path(parse_url($project->video, PHP_URL_PATH)))) {
+            unlink(public_path(parse_url($project->video, PHP_URL_PATH)));
+        }
+
+        $this->relatedData($project->id);
+
+        $project->delete();
+
+        return $this->apiResponse('Project deleted successfully', 200);
+    }
+
+
+    private function relatedData($projectId)
+    {
+        Comment::where('project_id', $projectId)->delete();
+    }
+
+    /**
+     * @OA\Post(
+     *     path="/api/projects/{projectId}/like/{userId}",
+     *     summary="Like a project",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="projectId",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the project",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Parameter(
+     *         name="userId",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the user who likes the project",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="Project liked successfully",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="Project liked successfully"),
+     *             @OA\Property(property="data", type="object")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=400,
+     *         description="User already liked this project",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="User already liked this project")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=404,
+     *         description="Project not found",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="No project found")
+     *         )
+     *     )
+     * )
+     */
+
+
+    // Method to like and unlike a project
+    public function like($projectId, $userId)
+    {
+        $project = Project::find($projectId);
+
+        if (!$project) {
+            return $this->apiResponse('No project found', 404);
+        }
+
+        $existingLike = ProjectLike::where('user_id', $userId)->where('project_id', $project->id)->first();
+
+        // If the user has already liked the project, remove the like
+        if ($existingLike) {
+            $existingLike->delete();
+            return $this->apiResponse('User unliked the project', 200);
+        }
+
+        ProjectLike::create([
+            'user_id' => $userId,
+            'project_id' => $project->id,
+        ]);
+
+
+        return $this->apiResponse('Project liked successfully', 200);
+    }
+
+    /**
+     * @OA\Get(
+     *     path="/api/projects/total-likes/{projectId}",
+     *     summary="Get total likes for a project",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="projectId",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the project",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="Project details",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="Project details"),
+     *             @OA\Property(property="data", type="object")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=404,
+     *         description="Project not found",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="No project found")
+     *         )
+     *     )
+     * )
+     */
+
+    public function getTotalLikes($projectId)
+    {
+        $project = Project::find($projectId);
+
+        if (!$project) {
+            return $this->apiResponse('project not found', 404);
+        }
+
+        $totalLikes = $project->likes()->count();
+
+        $likedUsers = $project->likes()->with('user')->get();
+
+        return $this->apiResponse('Total likes for the project', 200, [
+            'project_id' => $projectId,
+            'total_likes' => $totalLikes,
+            'liked_users' => ProjectLikesResource::collection($likedUsers),
+        ]);
+    }
+
+    /**
+     * @OA\Post(
+     *     path="/api/projects/{project_id}/comment/{user_id}",
+     *     summary="Create a new comment",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="project_id",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the project",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Parameter(
+     *         name="user_id",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the user",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\RequestBody(
+     *         required=true,
+     *         content={
+     *             @OA\MediaType(
+     *                 mediaType="multipart/form-data",
+     *                 @OA\Schema(
+     *                     type="object",
+     *                     required={"content"},
+     *                     @OA\Property(
+     *                         property="content",
+     *                         type="string",
+     *                         description="Description of the comment",
+     *                         example="This is a project comment."
+     *                     ),
+     *                 )
+     *             )
+     *         }
+     *     ),
+     *     @OA\Response(
+     *         response=201,
+     *         description="comment created successfully",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="comment created successfully"),
+     *             @OA\Property(property="data", type="object")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=422,
+     *         description="Validation errors",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="Validation errors"),
+     *             @OA\Property(property="errors", type="object")
+     *         )
+     *     )
+     * )
+     */
+
+     public function createComment(CommentRequest $request , $project_id , $user_id)
+     {
+
+        $project = Project::find($project_id);
+        if(!$project)
+        {
+            return $this->apiResponse('Not Found' , 404);
+        }
+
+        $validated_data = $request->validated();
+
+        $comment = Comment::create([
+            'project_id'=>$project_id,
+            'user_id'=>$user_id,
+            'content'=>$request->content,
+        ]);
+        $comment->load('user','user.employee');
+
+        if($comment)
+        {
+            return $this->apiResponse('comment created successfully' , 200 , new CommentResource($comment));
+        }
+        return $this->apiResponse('Error Created Commnet' , 400);
+
+     }
+
+      /**
+     * @OA\Get(
+     *     path="/api/projects/total-comments/{projectId}",
+     *     summary="Get total comments for a project",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="projectId",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the project",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="Project details",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="Project details"),
+     *             @OA\Property(property="data", type="object")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=404,
+     *         description="Project not found",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="No project found")
+     *         )
+     *     )
+     * )
+     */
+
+     public function showComment($projectId)
+     {
+        $project = Project::find($projectId);
+        if(!$project)
+        {
+            return $this->apiResponse('Project Not Found' , 404);
+        }
+
+        $comments = $project->comments()->with('user')->get();
+        $count_comment = $project->comments()->count();
+
+
+        return $this->apiResponse('Total comments for the project', 200, [
+            'project_id' => $projectId,
+            'total_comment' => $count_comment,
+            'comments' => CommentResource::collection($comments),
+        ]);
+
+     }
+
+
+     /**
+     * @OA\Post(
+     *     path="/api/projects/update/{project_id}/comment/{comment_id}",
+     *     summary="Update a comment",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="project_id",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the project",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Parameter(
+     *         name="comment_id",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the comment",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\RequestBody(
+     *         required=true,
+     *         content={
+     *             @OA\MediaType(
+     *                 mediaType="multipart/form-data",
+     *                 @OA\Schema(
+     *                     type="object",
+     *                     @OA\Property(
+     *                         property="content",
+     *                         type="string",
+     *                         description="Description of the comment",
+     *                         example="Updated comment description."
+     *                     ),
+     *                 )
+     *             )
+     *         }
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="comment updated successfully",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="comment updated successfully"),
+     *             @OA\Property(property="data", type="object")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=404,
+     *         description="comment not found",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="No project found")
+     *         )
+     *     )
+     * )
+     */
+
+     public function updateComment(CommentRequest $request,$project_id ,$comment_id)
+     {
+        $validatedData = $request->validated();
+        $authUser = Auth::user();
+
+        $project = Project::find($project_id);
+        if (!$project) {
+            return $this->apiResponse('Project Not Found', 404);
+        }
+
+        $comment = Comment::find($comment_id);
+        if (!$comment) {
+            return $this->apiResponse('Comment Not Found', 404);
+        }
+
+        if ($comment->project_id != $project_id) {
+            return $this->apiResponse('Comment not related to this project', 400);
+        }
+
+        if($authUser->id !== $comment->user_id){
+            return $this->apiResponse('Not authoraized', 401);
+        }
+
+        $comment->update([
+            'content' => $validatedData['content'],
+            'is_edited' => 1,
+        ]);
+        $newComment = Comment::with('user')->find($comment_id);
+
+        return $this->apiResponse('Comment updated successfully', 200, new CommentResource($newComment));
+     }
+
+
+     /**
+     * @OA\Delete(
+     *     path="/api/projects/delete/{project_id}/comment/{comment_id}",
+     *     summary="Delete Comment",
+     *     tags={"Project"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(
+     *         name="project_id",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the project",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Parameter(
+     *         name="comment_id",
+     *         in="path",
+     *         required=true,
+     *         description="ID of the comment",
+     *         @OA\Schema(type="integer")
+     *     ),
+     *     @OA\Response(
+     *         response=200,
+     *         description="commnet deleted successfully",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string", example="commnet deleted successfully"),
+     *             @OA\Property(property="data", type="object")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=400,
+     *         description="cant delete this comment",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="cant delete this comment")
+     *         )
+     *     ),
+     *     @OA\Response(
+     *         response=404,
+     *         description="comment not found",
+     *         @OA\JsonContent(
+     *             type="object",
+     *             @OA\Property(property="status", type="boolean", example=false),
+     *             @OA\Property(property="message", type="string", example="No comment found")
+     *         )
+     *     )
+     * )
+     */
+
+
+    public function deleteComment($project_id ,$comment_id)
+    {
+        $authUser = Auth::user();
+
+        $project = Project::find($project_id);
+        if (!$project) {
+            return $this->apiResponse('Project Not Found', 404);
+        }
+
+        $comment = Comment::find($comment_id);
+        if (!$comment) {
+            return $this->apiResponse('Comment Not Found', 404);
+        }
+
+        // Check if the comment is related to the specified project
+        if ($comment->project_id != $project_id) {
+            return $this->apiResponse('Comment not related to this project', 400);
+        }
+
+        if($authUser->id !== $comment->user_id){
+            return $this->apiResponse('Not authoraized', 401);
+        }
+
+        $comment->delete();
+
+        return $this->apiResponse('Comment deleted successfully', 200);
+    }
+
+}
