@@ -6,8 +6,12 @@ use Throwable;
 use App\Models\User;
 use Illuminate\Http\Request;
 use App\Traits\ApiResponseTrait;
+use App\Http\Requests\ForgotPasswordRequest;
+use App\Http\Requests\ResetPasswordRequest;
 use App\Http\Requests\UserRequest;
 use App\Http\Resources\UserResource;
+use App\Services\Auth\AuthService;
+use App\Services\Auth\TokenService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use App\Http\Requests\EditUserProfileRequest;
@@ -23,6 +27,11 @@ use Illuminate\Validation\ValidationException;
 class UserController extends Controller
 {
     use ApiResponseTrait;
+
+    public function __construct(
+        protected AuthService $authService,
+        protected TokenService $tokenService
+    ) {}
 
     /**
      * @OA\Post(
@@ -113,34 +122,16 @@ class UserController extends Controller
 
     public function register(UserRequest $request)
     {
-        try{
-            $validatedData = $request->validated();
-            $image_path = null;
+        try {
+            $user = $this->authService->register(
+                $request->validated(),
+                $request->file('image')
+            );
 
-            DB::beginTransaction();
-            if ($request->hasFile('image')) {
-                // Move the uploaded image to the public directory
-                $image_path = $request->file('image')->move(public_path('users_folder'), $request->file('image')->getClientOriginalName());
-                // Generate a public URL for the image
-                $image_path = asset('users_folder/' . $request->file('image')->getClientOriginalName());
-            }
-
-            $validatedData['image'] = $image_path;
-            $validatedData['password'] = Hash::make($validatedData['password']);
-
-            $user = User::create($validatedData);
-
-            // Send registration email
-            // Mail::to($user->email)->send(new UserRegister($user->name,$user->userType));
-
-            DB::commit();
             return $this->apiResponse('User registered successfully', 200, new UserResource($user));
+        } catch (Throwable $e) {
+            return $this->apiResponse('Something went wrong', 500, $e->getMessage());
         }
-        catch (Throwable $e) {
-            DB::rollBack();
-            return $this->apiResponse('Something went wrong', 500,$e->getMessage());
-        }
-
     }
 
 
@@ -337,7 +328,7 @@ class UserController extends Controller
          try {
             $user = Auth::user();
             if ($user) {
-                RefreshToken::where('user_id', $user->id)->delete();
+                $this->tokenService->invalidateUserTokens($user);
             }
 
             Auth::logout();
@@ -410,30 +401,16 @@ class UserController extends Controller
      */
 
 
-    public function sendResetLinkEmail(Request $request)
+    public function sendResetLinkEmail(ForgotPasswordRequest $request)
     {
          try {
-            $request->validate([
-                'email' => [
-                    'required',
-                    'email',
-                    Rule::exists('users', 'email')->where(function ($query) {
-                        $query->whereNotNull('email');
-                    }),
-                 ],
-            ], [
-                'email.exists' => 'The provided email address does not exist in our records.',
-            ]);
-
-            $status = Password::sendResetLink($request->only('email'));
+            $status = $this->authService->sendResetLink($request->validated('email'));
 
             if ($status === Password::RESET_LINK_SENT) {
                 return $this->apiResponse('Send Reset Link to Mail Successfully', 200, __($status));
             }
 
             return $this->apiResponse('Failed Send Mail', 400, __($status));
-        } catch (ValidationException $e) {
-            return $this->apiResponse('Validation error', 422, $e->errors());
         } catch (Throwable $e) {
             return $this->apiResponse('Something went wrong', 500, $e->getMessage());
         }
@@ -520,24 +497,11 @@ class UserController extends Controller
     * )
     */
 
-    public function resetPassword(Request $request)
+    public function resetPassword(ResetPasswordRequest $request)
     {
         try {
-            $request->validate([
-                'email' => 'required|email|exists:users,email',
-                'token' => 'required',
-                'password' => 'required|min:8|confirmed',
-            ], [
-                'email.exists' => 'The provided email address does not exist in our records.',
-            ]);
-
-            $status = Password::reset(
-                $request->only('email', 'password', 'password_confirmation', 'token'),
-                function ($user, $password) {
-                    $user->forceFill([
-                        'password' => Hash::make($password),
-                    ])->save();
-                }
+            $status = $this->authService->resetPassword(
+                $request->only('email', 'password', 'password_confirmation', 'token')
             );
 
             if ($status === Password::PASSWORD_RESET) {
@@ -545,8 +509,6 @@ class UserController extends Controller
             }
 
             return $this->apiResponse('Failed to Reset Password', 400, __($status));
-        } catch (ValidationException $e) {
-            return $this->apiResponse('Validation error', 422, $e->errors());
         } catch (Throwable $e) {
             return $this->apiResponse('Something went wrong', 500, $e->getMessage());
         }

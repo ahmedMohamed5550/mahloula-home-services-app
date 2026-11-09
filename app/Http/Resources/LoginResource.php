@@ -11,7 +11,7 @@ class LoginResource extends JsonResource
     protected $token;
     protected $refreshToken;
 
-    public function __construct($resource, $token,$refreshToken)
+    public function __construct($resource, $token, $refreshToken = null)
     {
         parent::__construct($resource);
         $this->token = $token;

@@ -20,15 +20,15 @@ class AdminController extends Controller
             'password' => 'required|min:6',
         ]);
 
-        if (Auth::attempt(['email' => $request->email, 'password' => $request->password])) {
+        if (Auth::guard('web')->attempt(['email' => $request->email, 'password' => $request->password])) {
 
-            if (Auth::user()->userType == 'admin') {
+            if (Auth::guard('web')->user()->userType == 'admin') {
 
                 return redirect()->route('admin.dashboard')->with('success', 'تم تسجيل الدخول بنجاح');
 
             } else {
 
-                Auth::logout();
+                Auth::guard('web')->logout();
                 return redirect()->back()->with(['error' => 'You do not have admin access permissions']);
             }
         }

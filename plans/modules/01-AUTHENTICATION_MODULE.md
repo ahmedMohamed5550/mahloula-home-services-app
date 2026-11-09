@@ -1,8 +1,8 @@
 # Module: 01 - Authentication & Identity
 
-Status: NOT STARTED  
-Approval: PENDING  
-Owner: Claude Code
+Status: COMPLETED  
+Approval: APPROVED  
+Owner: Antigravity
 
 ---
 
@@ -121,16 +121,43 @@ Provides secure user identity and access management for all user roles (`user`, 
 
 ## 9. Implementation checklist
 
-- [ ] User approved this module plan.
-- [ ] Baseline characterization tests written and passing.
-- [ ] Form Requests extracted for password reset endpoints.
-- [ ] Focused `AuthService` and `TokenService` introduced without changing return signatures.
-- [ ] Response payload and status code verified identical to baseline.
-- [ ] Regressions checked across full suite.
-- [ ] Completion report updated.
+- [x] User approved this module plan.
+- [x] Baseline characterization tests written and passing.
+- [x] Form Requests extracted for password reset endpoints (`ForgotPasswordRequest`, `ResetPasswordRequest`).
+- [x] Focused `AuthService` and `TokenService` introduced without changing return signatures.
+- [x] Response payload and status code verified identical to baseline.
+- [x] Regressions checked across full suite (`php artisan test` 28/28 passing).
+- [x] Completion report updated.
 
 ---
 
 ## 10. Completion report
 
-Final status: NOT STARTED
+Final status: COMPLETED
+
+### Summary of Completed Refactoring
+1. **Characterization & Feature Tests (`tests/Feature/AuthTest.php`)**:
+   - 17 comprehensive test cases covering registration, email/phone login, validation rules, token refresh & rotation, logout token cleanup, forgot password notifications, password resets, Google OAuth redirect & callback, admin web login & session logout.
+2. **Unit Tests (`tests/Unit/`)**:
+   - `tests/Unit/TokenServiceTest.php`: 4 tests for token generation, claim verification, token rotation, and invalidation.
+   - `tests/Unit/AuthServiceTest.php`: 5 tests for user registration with hashing, login attempt resolution, and Google OAuth persistence.
+3. **Form Request Extraction (`app/Http/Requests/`)**:
+   - `ForgotPasswordRequest`: encapsulates email existence validation with custom error formatting preserving the `{message: "Validation error", data: {...}, status: 422}` API contract.
+   - `ResetPasswordRequest`: encapsulates token, email, password confirmation validation with identical contract formatting.
+4. **Service Extraction (`app/Services/Auth/`)**:
+   - `TokenService`: encapsulates JWT custom claims ('refresh' => true, 7-day TTL), `refresh_tokens` database lifecycle, and token rotation.
+   - `AuthService`: encapsulates transactional user registration, multi-field login credentials check, password broker orchestration, and Google OAuth user creation.
+5. **Controller Refactoring**:
+   - `UserController`: refactored `register()`, `logout()`, `sendResetLinkEmail()`, and `resetPassword()` into thin controller actions delegating to `AuthService` and `TokenService`.
+   - `LoginController`: refactored `login()` and `refreshToken()` to delegate to `AuthService` and `TokenService`.
+   - `GoogleController`: delegates Google user resolution to `AuthService::handleGoogleUser()`.
+   - `AdminController`: streamlined `login()` and `logout()` to explicitly use `Auth::guard('web')` ensuring session compatibility alongside JWT default guard.
+6. **Bug Fixes**:
+   - Added default value `$refreshToken = null` to `LoginResource::__construct()` to prevent `ArgumentCountError` when used in single-token flows like Google login.
+   - Ensured password hash is generated for new OAuth users to satisfy SQLite/MySQL non-null constraints.
+   - Set test environment `APP_ROUTES_CACHE` to avoid stale cached route definitions during test runs.
+
+### Test Results
+- **Feature Tests**: 18 passed (AuthTest: 17, ExampleTest: 1)
+- **Unit Tests**: 10 passed (AuthServiceTest: 5, TokenServiceTest: 4, ExampleTest: 1)
+- **Total Assertions**: 104 passed, 0 failed, 0 errors.

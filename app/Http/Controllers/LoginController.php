@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Http\Requests\LoginRequest;
 use App\Http\Resources\LoginResource;
 use App\Models\RefreshToken;
+use App\Services\Auth\AuthService;
+use App\Services\Auth\TokenService;
 use App\Traits\ApiResponseTrait;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -14,6 +16,11 @@ use Tymon\JWTAuth\Facades\JWTAuth;
 class LoginController extends Controller
 {
     use ApiResponseTrait;
+
+    public function __construct(
+        protected AuthService $authService,
+        protected TokenService $tokenService
+    ) {}
 
     /**
      * @OA\Post(
@@ -79,35 +86,22 @@ class LoginController extends Controller
     {
         $loginData = $request->validated();
 
-        $fieldType = filter_var($loginData['email_or_phone'], FILTER_VALIDATE_EMAIL) ? 'email' : 'phone';
+        $result = $this->authService->attemptLogin($loginData['email_or_phone'], $loginData['password']);
 
-        if (!$token = Auth::attempt([$fieldType => $loginData['email_or_phone'], 'password' => $loginData['password']])) {
+        if (!$result) {
             return $this->apiResponse('Unauthorized. Incorrect email or password.', 401);
         }
 
-        $user = Auth::user();
-
-        $refreshToken = $this->generateRefreshToken($user);
-
-        return $this->apiResponse('User login successfully', 200, new LoginResource($user, $token, $refreshToken));
+        return $this->apiResponse(
+            'User login successfully',
+            200,
+            new LoginResource($result['user'], $result['token'], $result['refresh_token'])
+        );
     }
 
     protected function generateRefreshToken($user)
     {
-        $refreshToken = JWTAuth::customClaims([
-            'refresh' => true,
-            'exp' => now()->addDays(7)->timestamp,
-        ])->fromUser($user);
-
-        RefreshToken::updateOrCreate(
-            ['user_id' => $user->id],
-            [
-                'token' => $refreshToken,
-                'expires_at' => now()->addDays(7),
-            ]
-        );
-
-        return $refreshToken;
+        return $this->tokenService->generateRefreshToken($user);
     }
 
     /**
@@ -167,20 +161,14 @@ class LoginController extends Controller
             return $this->apiResponse('Refresh token is required.', 400);
         }
 
-         try {
-            $payload = JWTAuth::setToken($refreshToken)->getPayload();
+        try {
+            $result = $this->tokenService->rotateRefreshToken($refreshToken);
 
-            if (!$payload->get('refresh', false)) {
-                return $this->apiResponse('Invalid refresh token.', 401);
-            }
-
-            $user = JWTAuth::authenticate($refreshToken);
-
-            $newAccessToken = JWTAuth::fromUser($user);
-
-            $newRefreshToken = $this->generateRefreshToken($user);
-
-            return $this->apiResponse('Token refreshed successfully', 200, new LoginResource($user, $newAccessToken, $newRefreshToken));
+            return $this->apiResponse(
+                'Token refreshed successfully',
+                200,
+                new LoginResource($result['user'], $result['token'], $result['refresh_token'])
+            );
         } catch (\Tymon\JWTAuth\Exceptions\TokenInvalidException $e) {
             return $this->apiResponse('Invalid refresh token.', 401);
         } catch (\Tymon\JWTAuth\Exceptions\JWTException $e) {
